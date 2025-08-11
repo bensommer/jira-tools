@@ -345,7 +345,7 @@ class JiraClient:
             return None
     
     def _convert_to_adf(self, text: str) -> Dict:
-        """Convert plain text or markdown to Atlassian Document Format"""
+        """Convert plain text or markdown to Atlassian Document Format with improved formatting"""
         if not text:
             return {
                 "type": "doc",
@@ -354,25 +354,40 @@ class JiraClient:
             }
         
         content = []
+        # Split by double newlines for paragraphs
         paragraphs = text.split('\n\n')
         
         for paragraph in paragraphs:
             if not paragraph.strip():
                 continue
             
-            if paragraph.startswith('#'):
-                level = len(paragraph) - len(paragraph.lstrip('#'))
-                text_content = paragraph.lstrip('#').strip()
-                content.append({
-                    "type": "heading",
-                    "attrs": {"level": min(level, 6)},
-                    "content": [{"type": "text", "text": text_content}]
-                })
-            elif paragraph.startswith('- ') or paragraph.startswith('* '):
-                list_items = []
-                for line in paragraph.split('\n'):
-                    if line.startswith('- ') or line.startswith('* '):
-                        item_text = line[2:].strip()
+            # Process each line within a paragraph separately
+            lines = paragraph.split('\n')
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                
+                if not line.strip():
+                    i += 1
+                    continue
+                
+                # Handle headings (only if at start of line)
+                if line.startswith('#'):
+                    level = len(line) - len(line.lstrip('#'))
+                    heading_text = line.lstrip('#').strip()
+                    content.append({
+                        "type": "heading",
+                        "attrs": {"level": min(level, 6)},
+                        "content": [{"type": "text", "text": heading_text}]
+                    })
+                    i += 1
+                
+                # Handle bullet lists
+                elif line.startswith('- ') or line.startswith('* '):
+                    list_items = []
+                    # Collect consecutive list items
+                    while i < len(lines) and (lines[i].startswith('- ') or lines[i].startswith('* ')):
+                        item_text = lines[i][2:].strip()
                         list_items.append({
                             "type": "listItem",
                             "content": [{
@@ -380,30 +395,142 @@ class JiraClient:
                                 "content": [{"type": "text", "text": item_text}]
                             }]
                         })
-                if list_items:
+                        i += 1
+                    
+                    if list_items:
+                        content.append({
+                            "type": "bulletList",
+                            "content": list_items
+                        })
+                
+                # Handle numbered lists
+                elif line and line[0].isdigit() and (line.startswith('1. ') or 
+                     (len(line) > 2 and line[1] == '.' and line[2] == ' ') or
+                     (len(line) > 3 and line[:2].isdigit() and line[2] == '.' and line[3] == ' ')):
+                    list_items = []
+                    # Collect consecutive numbered list items
+                    while i < len(lines):
+                        curr_line = lines[i]
+                        # Check for numbered list pattern (1. , 2. , 10. , etc.)
+                        if curr_line and curr_line[0].isdigit():
+                            dot_index = curr_line.find('. ')
+                            if dot_index > 0 and dot_index <= 3:
+                                item_text = curr_line[dot_index + 2:].strip()
+                                list_items.append({
+                                    "type": "listItem",
+                                    "content": [{
+                                        "type": "paragraph",
+                                        "content": [{"type": "text", "text": item_text}]
+                                    }]
+                                })
+                                i += 1
+                            else:
+                                break
+                        else:
+                            break
+                    
+                    if list_items:
+                        content.append({
+                            "type": "orderedList",
+                            "content": list_items
+                        })
+                
+                # Handle code blocks
+                elif line.startswith('```'):
+                    code_lines = []
+                    language = line[3:].strip() or None
+                    i += 1
+                    # Collect lines until closing ```
+                    while i < len(lines) and not lines[i].startswith('```'):
+                        code_lines.append(lines[i])
+                        i += 1
+                    i += 1  # Skip closing ```
+                    
+                    if code_lines:
+                        code_block = {
+                            "type": "codeBlock",
+                            "content": [{"type": "text", "text": '\n'.join(code_lines)}]
+                        }
+                        if language:
+                            code_block["attrs"] = {"language": language}
+                        content.append(code_block)
+                
+                # Handle blockquotes
+                elif line.startswith('> '):
+                    quote_lines = []
+                    while i < len(lines) and lines[i].startswith('> '):
+                        quote_lines.append(lines[i][2:].strip())
+                        i += 1
+                    
+                    if quote_lines:
+                        content.append({
+                            "type": "blockquote",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": ' '.join(quote_lines)}]
+                            }]
+                        })
+                
+                # Handle horizontal rules
+                elif line.strip() in ['---', '***', '___'] and len(line.strip()) >= 3:
                     content.append({
-                        "type": "bulletList",
-                        "content": list_items
+                        "type": "rule"
                     })
-            elif paragraph.startswith('```'):
-                lines = paragraph.split('\n')
-                code_lines = []
-                in_code = False
-                for line in lines:
-                    if line.startswith('```'):
-                        in_code = not in_code
-                    elif in_code:
-                        code_lines.append(line)
-                if code_lines:
-                    content.append({
-                        "type": "codeBlock",
-                        "content": [{"type": "text", "text": '\n'.join(code_lines)}]
-                    })
-            else:
-                content.append({
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": paragraph.strip()}]
-                })
+                    i += 1
+                
+                # Handle regular paragraphs
+                else:
+                    # Collect consecutive non-special lines as a paragraph
+                    para_lines = []
+                    while i < len(lines):
+                        curr_line = lines[i]
+                        # Stop if we hit a special line marker
+                        if (curr_line.startswith('#') or 
+                            curr_line.startswith('- ') or 
+                            curr_line.startswith('* ') or
+                            curr_line.startswith('```') or
+                            curr_line.startswith('> ') or
+                            curr_line.strip() in ['---', '***', '___'] or
+                            (curr_line and curr_line[0].isdigit() and '. ' in curr_line[:4])):
+                            break
+                        if curr_line.strip():
+                            para_lines.append(curr_line.strip())
+                        i += 1
+                    
+                    if para_lines:
+                        # Join lines with space for proper paragraph flow
+                        para_text = ' '.join(para_lines)
+                        
+                        # Handle inline formatting
+                        text_content = []
+                        
+                        # Simple inline code detection (text between backticks)
+                        import re
+                        parts = re.split(r'`([^`]+)`', para_text)
+                        for idx, part in enumerate(parts):
+                            if part:
+                                if idx % 2 == 1:  # Odd indices are code
+                                    text_content.append({
+                                        "type": "text",
+                                        "text": part,
+                                        "marks": [{"type": "code"}]
+                                    })
+                                else:
+                                    # Check for bold and italic
+                                    if '**' in part or '*' in part:
+                                        # For simplicity, just add as plain text
+                                        # A full implementation would parse bold/italic
+                                        text_content.append({"type": "text", "text": part})
+                                    else:
+                                        text_content.append({"type": "text", "text": part})
+                        
+                        if not text_content:
+                            text_content = [{"type": "text", "text": para_text}]
+                        
+                        content.append({
+                            "type": "paragraph",
+                            "content": text_content
+                        })
         
         return {
             "type": "doc",
