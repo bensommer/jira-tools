@@ -39,7 +39,7 @@ fi
 
 # Install Python dependencies
 echo "📦 Installing Python dependencies..."
-python3 -m pip install requests python-dotenv tabulate
+python3 -m pip install --break-system-packages requests python-dotenv tabulate
 
 # Create installation directory
 echo "📁 Creating installation directory..."
