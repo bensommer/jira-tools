@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Claude configuration
+CLAUDE.md
+
 # Python
 __pycache__/
 *.py[cod]

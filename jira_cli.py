@@ -448,9 +448,32 @@ def main():
             cli.info(args)
         
     except Exception as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
+        error_msg = str(e)
+        
+        # Provide more user-friendly error messages for common issues
+        if "Missing required environment variables" in error_msg:
+            print("❌ Configuration Error:", file=sys.stderr)
+            print(error_msg, file=sys.stderr)
+            print("\n💡 To get started:", file=sys.stderr)
+            print("1. Get your API token from: https://id.atlassian.com/manage-profile/security/api-tokens", file=sys.stderr)
+            print("2. Create a configuration file with your credentials", file=sys.stderr)
+            print("3. Run: jira info --types --statuses to test your setup", file=sys.stderr)
+        elif "401" in error_msg or "Authentication" in error_msg:
+            print("❌ Authentication Error:", file=sys.stderr)
+            print("Your API token or email may be incorrect.", file=sys.stderr)
+            print("💡 Generate a new API token at: https://id.atlassian.com/manage-profile/security/api-tokens", file=sys.stderr)
+        elif "403" in error_msg or "Permission" in error_msg:
+            print("❌ Permission Error:", file=sys.stderr)
+            print("You don't have permission to perform this action in JIRA.", file=sys.stderr)
+        elif "404" in error_msg:
+            print("❌ Not Found Error:", file=sys.stderr)
+            print("The requested resource (issue, project, etc.) was not found.", file=sys.stderr)
+        else:
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            
         if args.verbose:
             import traceback
+            print("\n🔍 Full error details:", file=sys.stderr)
             traceback.print_exc()
         sys.exit(1)
 

@@ -13,7 +13,10 @@ import logging
 from functools import wraps
 import time
 
-load_dotenv()
+# Load environment variables from multiple possible locations
+load_dotenv()  # Load from .env in current directory
+load_dotenv(Path.home() / '.jira.env')  # Load from user home directory
+load_dotenv('/etc/jira-tools.env')  # Load from system-wide config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,12 +59,32 @@ class JiraConfig:
         api_token = os.getenv('JIRA_API_TOKEN')
         project_key = os.getenv('JIRA_PROJECT_KEY', 'GIQ')
         
+        # Clean URL - remove trailing slash if present
+        if url and url.endswith('/'):
+            url = url.rstrip('/')
+            
+        # Validate URL format
+        if url and not (url.startswith('http://') or url.startswith('https://')):
+            raise ValueError(f"JIRA_URL must start with http:// or https://, got: {url}")
+        
         if not all([url, email, api_token]):
             missing = []
             if not url: missing.append('JIRA_URL')
             if not email: missing.append('JIRA_EMAIL')
             if not api_token: missing.append('JIRA_API_TOKEN')
-            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+            
+            # Provide helpful configuration guidance
+            config_locations = [
+                "Current directory: .env",
+                "User home: ~/.jira.env",
+                "System-wide: /etc/jira-tools.env"
+            ]
+            
+            raise ValueError(
+                f"Missing required environment variables: {', '.join(missing)}\n"
+                f"Configuration can be set in:\n" +
+                "\n".join([f"  - {loc}" for loc in config_locations])
+            )
         
         return cls(url=url, email=email, api_token=api_token, project_key=project_key)
 
@@ -76,7 +99,8 @@ class JiraClient:
         self.session.auth = (self.config.email, self.config.api_token)
         self.session.headers.update({
             'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'X-Atlassian-Token': 'no-check'  # Required for some operations
         })
         self.base_url = f"{self.config.url}/rest/api/3"
         
@@ -85,11 +109,34 @@ class JiraClient:
         url = f"{self.base_url}/{endpoint}"
         logger.debug(f"{method} {url}")
         
+        # Add timeout if not specified
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 30
+            
         response = self.session.request(method, url, **kwargs)
         
         if response.status_code >= 400:
-            error_msg = f"API Error {response.status_code}: {response.text}"
+            error_details = ""
+            try:
+                error_json = response.json()
+                if 'errorMessages' in error_json:
+                    error_details = "; ".join(error_json['errorMessages'])
+                elif 'errors' in error_json:
+                    error_details = "; ".join([f"{k}: {v}" for k, v in error_json['errors'].items()])
+            except:
+                error_details = response.text[:200]  # Limit error text length
+                
+            error_msg = f"API Error {response.status_code}: {error_details}"
             logger.error(error_msg)
+            
+            # Provide more specific error messages for common issues
+            if response.status_code == 401:
+                logger.error("Authentication failed. Check your API token and email.")
+            elif response.status_code == 403:
+                logger.error("Permission denied. Check your JIRA permissions.")
+            elif response.status_code == 404:
+                logger.error(f"Resource not found: {endpoint}")
+                
             response.raise_for_status()
             
         return response
@@ -114,9 +161,13 @@ class JiraClient:
             "issuetype": {"name": issue_type}
         }
         
-        # Only add priority for non-Epic types
-        if priority and issue_type.lower() != 'epic':
-            fields["priority"] = {"name": priority}
+        # Add priority - some JIRA configurations allow priority on all issue types
+        if priority:
+            try:
+                fields["priority"] = {"name": priority}
+            except:
+                # If priority fails, continue without it
+                logger.warning(f"Could not set priority {priority} for issue type {issue_type}")
         
         if assignee_email:
             account_id = self._get_user_account_id(assignee_email)
@@ -197,44 +248,70 @@ class JiraClient:
         
         params = {
             "jql": jql,
-            "maxResults": max_results
+            "maxResults": min(max_results, 1000),  # JIRA has limits
+            "startAt": 0
         }
         
         if fields:
             params["fields"] = ','.join(fields)
+        else:
+            # Include essential fields by default
+            params["fields"] = "summary,status,priority,assignee,reporter,issuetype,created,updated,labels,parent"
         
-        response = self._make_request("GET", "search", params=params)
-        data = response.json()
-        if isinstance(data, dict):
-            return data.get('issues', [])
-        return []
+        try:
+            # Use the new search/jql endpoint
+            response = self._make_request("GET", "search/jql", params=params)
+            data = response.json()
+            if isinstance(data, dict):
+                issues = data.get('issues', [])
+                total = data.get('total', len(issues))
+                if total > len(issues):
+                    logger.info(f"Retrieved {len(issues)} of {total} total issues")
+                return issues
+            return []
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return []
     
     def transition_issue(self, issue_key: str, status: str) -> bool:
         """Transition issue to a new status"""
         logger.info(f"Transitioning {issue_key} to {status}")
         
-        transitions_response = self._make_request("GET", f"issue/{issue_key}/transitions")
-        transitions = transitions_response.json().get('transitions', [])
-        
-        transition_id = None
-        for transition in transitions:
-            if transition['to']['name'].lower() == status.lower():
-                transition_id = transition['id']
-                break
-        
-        if not transition_id:
-            available = [t['to']['name'] for t in transitions]
-            logger.error(f"Status '{status}' not available. Available: {available}")
+        try:
+            transitions_response = self._make_request("GET", f"issue/{issue_key}/transitions")
+            transitions = transitions_response.json().get('transitions', [])
+            
+            transition_id = None
+            # Try exact match first
+            for transition in transitions:
+                if transition['to']['name'].lower() == status.lower():
+                    transition_id = transition['id']
+                    break
+            
+            # Try partial match if exact match fails
+            if not transition_id:
+                for transition in transitions:
+                    if status.lower() in transition['to']['name'].lower():
+                        transition_id = transition['id']
+                        logger.info(f"Using partial match: '{transition['to']['name']}'")
+                        break
+            
+            if not transition_id:
+                available = [t['to']['name'] for t in transitions]
+                logger.error(f"Status '{status}' not available. Available: {available}")
+                return False
+            
+            response = self._make_request(
+                "POST", 
+                f"issue/{issue_key}/transitions",
+                json={"transition": {"id": transition_id}}
+            )
+            
+            logger.info(f"✅ Transitioned {issue_key} to {status}")
+            return response.status_code in [200, 204]
+        except Exception as e:
+            logger.error(f"Failed to transition issue: {e}")
             return False
-        
-        response = self._make_request(
-            "POST", 
-            f"issue/{issue_key}/transitions",
-            json={"transition": {"id": transition_id}}
-        )
-        
-        logger.info(f"✅ Transitioned {issue_key} to {status}")
-        return response.status_code in [200, 204]
     
     def assign_issue(self, issue_key: str, assignee_email: str) -> bool:
         """Assign issue to a user"""
@@ -258,18 +335,37 @@ class JiraClient:
         """Link two issues together"""
         logger.info(f"Linking {inward_issue} to {outward_issue} with type {link_type}")
         
-        response = self._make_request(
-            "POST",
-            "issueLink",
-            json={
-                "type": {"name": link_type},
-                "inwardIssue": {"key": inward_issue},
-                "outwardIssue": {"key": outward_issue}
-            }
-        )
-        
-        logger.info(f"✅ Linked {inward_issue} to {outward_issue}")
-        return response.status_code in [200, 201]
+        try:
+            # Try new format first
+            response = self._make_request(
+                "POST",
+                "issueLink",
+                json={
+                    "type": {"name": link_type},
+                    "inwardIssue": {"key": inward_issue},
+                    "outwardIssue": {"key": outward_issue}
+                }
+            )
+            
+            logger.info(f"✅ Linked {inward_issue} to {outward_issue}")
+            return response.status_code in [200, 201]
+        except Exception as e:
+            logger.error(f"Failed to link issues: {e}")
+            # Try alternative linking approach
+            try:
+                response = self._make_request(
+                    "POST",
+                    "issueLink",
+                    json={
+                        "linkType": {"name": link_type},
+                        "fromIssueKey": inward_issue,
+                        "toIssueKey": outward_issue
+                    }
+                )
+                return response.status_code in [200, 201]
+            except Exception as e2:
+                logger.error(f"Alternative linking also failed: {e2}")
+                return False
     
     def add_comment(self, issue_key: str, comment: str) -> Dict:
         """Add a comment to an issue"""
@@ -326,17 +422,46 @@ class JiraClient:
     def get_statuses(self, project_key: Optional[str] = None) -> List[Dict]:
         """Get available statuses for project"""
         key = project_key or self.config.project_key
-        response = self._make_request("GET", f"project/{key}/statuses")
-        return response.json()
+        try:
+            # Try project-specific statuses first
+            response = self._make_request("GET", f"project/{key}/statuses")
+            return response.json()
+        except:
+            # Fallback to global statuses
+            try:
+                response = self._make_request("GET", "status")
+                return response.json()
+            except Exception as e:
+                logger.error(f"Could not get statuses: {e}")
+                return []
     
     def _get_user_account_id(self, email: str) -> Optional[str]:
         """Get user account ID from email"""
         try:
-            response = self._make_request("GET", "user/search", params={"query": email})
+            # Try the newer user/search endpoint first
+            response = self._make_request("GET", "user/search", params={"query": email, "maxResults": 1})
             users = response.json()
             
-            if users:
+            if users and len(users) > 0:
                 return users[0]['accountId']
+            
+            # Fallback: try user lookup by email directly
+            try:
+                response = self._make_request("GET", "user", params={"expand": "groups,applicationRoles", "accountId": email})
+                user = response.json()
+                return user.get('accountId')
+            except:
+                pass
+                
+            # Final fallback: try user picker search
+            try:
+                response = self._make_request("GET", "user/picker", params={"query": email, "maxResults": 1})
+                data = response.json()
+                users = data.get('users', [])
+                if users:
+                    return users[0]['accountId']
+            except:
+                pass
             
             logger.warning(f"User not found: {email}")
             return None
@@ -545,7 +670,32 @@ class JiraClient:
     def link_to_epic(self, story_key: str, epic_key: str) -> bool:
         """Link a story to an epic"""
         logger.info(f"Linking {story_key} to epic {epic_key}")
-        return self.update_issue(story_key, custom_fields={"parent": {"key": epic_key}})
+        try:
+            # Try updating parent field first
+            success = self.update_issue(story_key, custom_fields={"parent": {"key": epic_key}})
+            if success:
+                return True
+        except:
+            pass
+            
+        # Fallback: use Epic Link custom field (common field name)
+        try:
+            # Get project to find Epic Link field
+            response = self._make_request("GET", f"issue/{story_key}/editmeta")
+            meta = response.json()
+            
+            epic_link_field = None
+            for field_id, field_info in meta.get('fields', {}).items():
+                if field_info.get('name', '').lower() in ['epic link', 'epic name']:
+                    epic_link_field = field_id
+                    break
+            
+            if epic_link_field:
+                return self.update_issue(story_key, custom_fields={epic_link_field: epic_key})
+        except Exception as e:
+            logger.error(f"Failed to link to epic: {e}")
+            
+        return False
     
     def bulk_create_issues(self, issues: List[Dict]) -> List[Dict]:
         """Create multiple issues in bulk"""
