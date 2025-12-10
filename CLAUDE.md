@@ -1,5 +1,27 @@
 # JIRA Tools Usage Guide
 
+## Markdown Support
+
+### ✅ Fully Supported Features
+- **Text Formatting:** `**bold**`, `*italic*`, `***bold italic***`, `~~strikethrough~~`, `` `inline code` ``
+- **Lists:** Bullet and numbered lists with unlimited nesting
+- **Task Lists:** `- [ ]` and `- [x]` (displayed as text, not interactive)
+- **Code Blocks:** ` ```language ` with syntax highlighting
+- **Tables:** Full table support with formatting
+- **Links:** `[text](url)` renders as clickable links
+- **Headings:** H1-H6 (`#` through `######`)
+- **Horizontal Rules:** `---`, `***`, or `___`
+
+### ⚠️ Known Limitations
+- **Blockquotes (>):** NOT supported - JIRA API validation fails
+- **Images:** Display as `[Image: alt]` placeholder
+- **Definition Lists:** No ADF equivalent
+- **Inline HTML:** Stripped for security
+
+Write natural markdown in descriptions and comments - it will render beautifully in JIRA!
+
+---
+
 ## Installation & Setup
 
 ```bash

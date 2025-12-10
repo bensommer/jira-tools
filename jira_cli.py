@@ -11,6 +11,7 @@ from jira_client import JiraClient, JiraConfig
 import logging
 from tabulate import tabulate
 from datetime import datetime
+from html2text import HTML2Text
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -98,11 +99,11 @@ class JiraCLI:
         print("\n📋 SUMMARY")
         print("-" * 40)
         print(fields['summary'])
-        
+
         if 'renderedFields' in issue and issue['renderedFields'].get('description'):
             print("\n📄 DESCRIPTION")
             print("-" * 40)
-            print(issue['renderedFields']['description'])
+            print(self._render_html(issue['renderedFields']['description']))
         elif fields.get('description'):
             print("\n📄 DESCRIPTION")
             print("-" * 40)
@@ -293,6 +294,23 @@ class JiraCLI:
             return dt.strftime('%Y-%m-%d %H:%M')
         except:
             return date_str[:19] if len(date_str) >= 19 else date_str
+
+    def _render_html(self, html_content: str) -> str:
+        """Convert HTML to readable plain text"""
+        if not html_content:
+            return "No content"
+
+        h = HTML2Text()
+        h.ignore_links = False
+        h.body_width = 0  # Don't wrap text
+        h.ignore_images = False
+        h.bypass_tables = False
+        h.unicode_snob = True
+        h.ignore_emphasis = False
+
+        # Convert HTML to markdown
+        result = h.handle(html_content).strip()
+        return result if result else "No content"
     
     def _render_adf(self, adf_content):
         """Simple rendering of ADF content to text"""

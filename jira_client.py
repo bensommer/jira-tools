@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 import logging
 from functools import wraps
 import time
+import re
+from markdown_it import MarkdownIt
 
 # Load environment variables from multiple possible locations
 load_dotenv()  # Load from .env in current directory
@@ -470,198 +472,351 @@ class JiraClient:
             return None
     
     def _convert_to_adf(self, text: str) -> Dict:
-        """Convert plain text or markdown to Atlassian Document Format with improved formatting"""
+        """Convert markdown to Atlassian Document Format using markdown-it-py"""
         if not text:
             return {
                 "type": "doc",
                 "version": 1,
                 "content": []
             }
-        
-        content = []
-        # Split by double newlines for paragraphs
-        paragraphs = text.split('\n\n')
-        
-        for paragraph in paragraphs:
-            if not paragraph.strip():
-                continue
-            
-            # Process each line within a paragraph separately
-            lines = paragraph.split('\n')
-            i = 0
-            while i < len(lines):
-                line = lines[i]
-                
-                if not line.strip():
-                    i += 1
-                    continue
-                
-                # Handle headings (only if at start of line)
-                if line.startswith('#'):
-                    level = len(line) - len(line.lstrip('#'))
-                    heading_text = line.lstrip('#').strip()
-                    content.append({
-                        "type": "heading",
-                        "attrs": {"level": min(level, 6)},
-                        "content": [{"type": "text", "text": heading_text}]
-                    })
-                    i += 1
-                
-                # Handle bullet lists
-                elif line.startswith('- ') or line.startswith('* '):
-                    list_items = []
-                    # Collect consecutive list items
-                    while i < len(lines) and (lines[i].startswith('- ') or lines[i].startswith('* ')):
-                        item_text = lines[i][2:].strip()
-                        list_items.append({
-                            "type": "listItem",
-                            "content": [{
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": item_text}]
-                            }]
-                        })
-                        i += 1
-                    
-                    if list_items:
-                        content.append({
-                            "type": "bulletList",
-                            "content": list_items
-                        })
-                
-                # Handle numbered lists
-                elif line and line[0].isdigit() and (line.startswith('1. ') or 
-                     (len(line) > 2 and line[1] == '.' and line[2] == ' ') or
-                     (len(line) > 3 and line[:2].isdigit() and line[2] == '.' and line[3] == ' ')):
-                    list_items = []
-                    # Collect consecutive numbered list items
-                    while i < len(lines):
-                        curr_line = lines[i]
-                        # Check for numbered list pattern (1. , 2. , 10. , etc.)
-                        if curr_line and curr_line[0].isdigit():
-                            dot_index = curr_line.find('. ')
-                            if dot_index > 0 and dot_index <= 3:
-                                item_text = curr_line[dot_index + 2:].strip()
-                                list_items.append({
-                                    "type": "listItem",
-                                    "content": [{
-                                        "type": "paragraph",
-                                        "content": [{"type": "text", "text": item_text}]
-                                    }]
-                                })
-                                i += 1
-                            else:
-                                break
-                        else:
-                            break
-                    
-                    if list_items:
-                        content.append({
-                            "type": "orderedList",
-                            "content": list_items
-                        })
-                
-                # Handle code blocks
-                elif line.startswith('```'):
-                    code_lines = []
-                    language = line[3:].strip() or None
-                    i += 1
-                    # Collect lines until closing ```
-                    while i < len(lines) and not lines[i].startswith('```'):
-                        code_lines.append(lines[i])
-                        i += 1
-                    i += 1  # Skip closing ```
-                    
-                    if code_lines:
-                        code_block = {
-                            "type": "codeBlock",
-                            "content": [{"type": "text", "text": '\n'.join(code_lines)}]
-                        }
-                        if language:
-                            code_block["attrs"] = {"language": language}
-                        content.append(code_block)
-                
-                # Handle blockquotes
-                elif line.startswith('> '):
-                    quote_lines = []
-                    while i < len(lines) and lines[i].startswith('> '):
-                        quote_lines.append(lines[i][2:].strip())
-                        i += 1
-                    
-                    if quote_lines:
-                        content.append({
-                            "type": "blockquote",
-                            "content": [{
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": ' '.join(quote_lines)}]
-                            }]
-                        })
-                
-                # Handle horizontal rules
-                elif line.strip() in ['---', '***', '___'] and len(line.strip()) >= 3:
-                    content.append({
-                        "type": "rule"
-                    })
-                    i += 1
-                
-                # Handle regular paragraphs
-                else:
-                    # Collect consecutive non-special lines as a paragraph
-                    para_lines = []
-                    while i < len(lines):
-                        curr_line = lines[i]
-                        # Stop if we hit a special line marker
-                        if (curr_line.startswith('#') or 
-                            curr_line.startswith('- ') or 
-                            curr_line.startswith('* ') or
-                            curr_line.startswith('```') or
-                            curr_line.startswith('> ') or
-                            curr_line.strip() in ['---', '***', '___'] or
-                            (curr_line and curr_line[0].isdigit() and '. ' in curr_line[:4])):
-                            break
-                        if curr_line.strip():
-                            para_lines.append(curr_line.strip())
-                        i += 1
-                    
-                    if para_lines:
-                        # Join lines with space for proper paragraph flow
-                        para_text = ' '.join(para_lines)
-                        
-                        # Handle inline formatting
-                        text_content = []
-                        
-                        # Simple inline code detection (text between backticks)
-                        import re
-                        parts = re.split(r'`([^`]+)`', para_text)
-                        for idx, part in enumerate(parts):
-                            if part:
-                                if idx % 2 == 1:  # Odd indices are code
-                                    text_content.append({
-                                        "type": "text",
-                                        "text": part,
-                                        "marks": [{"type": "code"}]
-                                    })
-                                else:
-                                    # Check for bold and italic
-                                    if '**' in part or '*' in part:
-                                        # For simplicity, just add as plain text
-                                        # A full implementation would parse bold/italic
-                                        text_content.append({"type": "text", "text": part})
-                                    else:
-                                        text_content.append({"type": "text", "text": part})
-                        
-                        if not text_content:
-                            text_content = [{"type": "text", "text": para_text}]
-                        
-                        content.append({
-                            "type": "paragraph",
-                            "content": text_content
-                        })
-        
+
+        # Initialize markdown parser with common extensions
+        md = MarkdownIt("commonmark", {"typographer": True})
+        md.enable(['table', 'strikethrough'])
+
+        # Parse markdown to tokens
+        tokens = md.parse(text)
+
+        # Convert tokens to ADF
+        adf_content = self._tokens_to_adf(tokens)
+
         return {
             "type": "doc",
             "version": 1,
-            "content": content
+            "content": adf_content
         }
+
+    def _tokens_to_adf(self, tokens: List, level: int = 0) -> List[Dict]:
+        """Recursively convert markdown-it tokens to ADF nodes"""
+        adf_nodes = []
+        i = 0
+
+        while i < len(tokens):
+            token = tokens[i]
+
+            # Heading
+            if token.type == 'heading_open':
+                level_num = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
+                i += 1  # Move to inline token
+                inline_content = self._process_inline(tokens[i]) if i < len(tokens) else []
+                adf_nodes.append({
+                    "type": "heading",
+                    "attrs": {"level": level_num},
+                    "content": inline_content
+                })
+                i += 2  # Skip inline and heading_close
+
+            # Paragraph
+            elif token.type == 'paragraph_open':
+                i += 1  # Move to inline token
+                inline_content = self._process_inline(tokens[i]) if i < len(tokens) else []
+                if inline_content:  # Only add non-empty paragraphs
+                    adf_nodes.append({
+                        "type": "paragraph",
+                        "content": inline_content
+                    })
+                i += 2  # Skip inline and paragraph_close
+
+            # Bullet list
+            elif token.type == 'bullet_list_open':
+                i += 1
+                list_items = []
+                while i < len(tokens) and tokens[i].type != 'bullet_list_close':
+                    if tokens[i].type == 'list_item_open':
+                        i += 1
+                        # Collect token range for this list item
+                        item_start = i
+                        while i < len(tokens) and tokens[i].type != 'list_item_close':
+                            i += 1
+                        item_end = i
+                        # Process all tokens in this list item
+                        item_content = self._tokens_to_adf(tokens[item_start:item_end], level + 1)
+
+                        # Note: Task lists (checkboxes) are kept as regular lists with checkbox text
+                        # JIRA's API doesn't reliably support taskItem/taskList ADF nodes
+                        list_items.append({
+                            "type": "listItem",
+                            "content": item_content
+                        })
+                        i += 1  # Skip list_item_close
+                    else:
+                        i += 1
+
+                adf_nodes.append({
+                    "type": "bulletList",
+                    "content": list_items
+                })
+                i += 1  # Skip bullet_list_close
+
+            # Ordered list
+            elif token.type == 'ordered_list_open':
+                i += 1
+                list_items = []
+                while i < len(tokens) and tokens[i].type != 'ordered_list_close':
+                    if tokens[i].type == 'list_item_open':
+                        i += 1
+                        # Collect token range for this list item
+                        item_start = i
+                        while i < len(tokens) and tokens[i].type != 'list_item_close':
+                            i += 1
+                        item_end = i
+                        # Process all tokens in this list item
+                        item_content = self._tokens_to_adf(tokens[item_start:item_end], level + 1)
+                        list_items.append({
+                            "type": "listItem",
+                            "content": item_content
+                        })
+                        i += 1  # Skip list_item_close
+                    else:
+                        i += 1
+                adf_nodes.append({
+                    "type": "orderedList",
+                    "content": list_items
+                })
+                i += 1  # Skip ordered_list_close
+
+            # Code block
+            elif token.type == 'fence' or token.type == 'code_block':
+                code_block = {
+                    "type": "codeBlock",
+                    "content": [{"type": "text", "text": token.content.rstrip('\n')}]
+                }
+                if token.info:  # Language specified
+                    code_block["attrs"] = {"language": token.info.strip()}
+                adf_nodes.append(code_block)
+                i += 1
+
+            # Blockquote
+            elif token.type == 'blockquote_open':
+                i += 1
+                quote_content = []
+                while i < len(tokens) and tokens[i].type != 'blockquote_close':
+                    quote_nodes = self._tokens_to_adf([tokens[i]], level + 1)
+                    quote_content.extend(quote_nodes)
+                    i += 1
+                adf_nodes.append({
+                    "type": "blockquote",
+                    "content": quote_content
+                })
+                i += 1  # Skip blockquote_close
+
+            # Horizontal rule
+            elif token.type == 'hr':
+                adf_nodes.append({"type": "rule"})
+                i += 1
+
+            # Table
+            elif token.type == 'table_open':
+                i += 1
+                table_rows = []
+                is_header_row = True
+
+                while i < len(tokens) and tokens[i].type != 'table_close':
+                    if tokens[i].type == 'thead_open' or tokens[i].type == 'tbody_open':
+                        i += 1
+                        continue
+                    elif tokens[i].type == 'thead_close' or tokens[i].type == 'tbody_close':
+                        if tokens[i].type == 'thead_close':
+                            is_header_row = False
+                        i += 1
+                        continue
+                    elif tokens[i].type == 'tr_open':
+                        i += 1
+                        cells = []
+                        while i < len(tokens) and tokens[i].type != 'tr_close':
+                            if tokens[i].type in ['th_open', 'td_open']:
+                                i += 1
+                                cell_content = []
+                                if i < len(tokens) and tokens[i].type == 'inline':
+                                    cell_inline = self._process_inline(tokens[i])
+                                    if cell_inline:
+                                        cell_content = [{
+                                            "type": "paragraph",
+                                            "content": cell_inline
+                                        }]
+                                    i += 1
+
+                                cell_type = "tableHeader" if is_header_row else "tableCell"
+                                cells.append({
+                                    "type": cell_type,
+                                    "content": cell_content if cell_content else []
+                                })
+                                i += 1  # Skip th_close or td_close
+                            else:
+                                i += 1
+
+                        if cells:
+                            table_rows.append({
+                                "type": "tableRow",
+                                "content": cells
+                            })
+                        i += 1  # Skip tr_close
+                    else:
+                        i += 1
+
+                if table_rows:
+                    adf_nodes.append({
+                        "type": "table",
+                        "content": table_rows
+                    })
+                i += 1  # Skip table_close
+
+            # HTML block or inline HTML (ignore for ADF)
+            elif token.type in ['html_block', 'html_inline']:
+                i += 1
+
+            else:
+                i += 1
+
+        return adf_nodes
+
+    def _process_inline(self, token) -> List[Dict]:
+        """Process inline tokens to ADF text nodes with marks"""
+        if not token or token.type != 'inline' or not token.children:
+            return []
+
+        adf_content = []
+        current_text = ""
+        current_marks = []
+
+        for child in token.children:
+            if child.type == 'text':
+                if current_marks:
+                    # Flush any accumulated text with marks
+                    if current_text:
+                        adf_content.append({
+                            "type": "text",
+                            "text": current_text,
+                            "marks": current_marks.copy()
+                        })
+                        current_text = ""
+                    # Add new text with current marks
+                    adf_content.append({
+                        "type": "text",
+                        "text": child.content,
+                        "marks": current_marks.copy()
+                    })
+                else:
+                    # No marks, just accumulate text
+                    current_text += child.content
+
+            elif child.type == 'code_inline':
+                # Flush any accumulated plain text
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                # Add code with mark
+                adf_content.append({
+                    "type": "text",
+                    "text": child.content,
+                    "marks": [{"type": "code"}]
+                })
+
+            elif child.type == 'strong_open':
+                # Flush any accumulated plain text
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                current_marks.append({"type": "strong"})
+
+            elif child.type == 'strong_close':
+                current_marks = [m for m in current_marks if m.get('type') != 'strong']
+
+            elif child.type == 'em_open':
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                current_marks.append({"type": "em"})
+
+            elif child.type == 'em_close':
+                current_marks = [m for m in current_marks if m.get('type') != 'em']
+
+            elif child.type == 's_open':  # Strikethrough
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                current_marks.append({"type": "strike"})
+
+            elif child.type == 's_close':
+                current_marks = [m for m in current_marks if m.get('type') != 'strike']
+
+            elif child.type == 'link_open':
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                # Get the href attribute
+                href = None
+                for attr in child.attrs:
+                    if attr[0] == 'href':
+                        href = attr[1]
+                        break
+                if href:
+                    current_marks.append({"type": "link", "attrs": {"href": href}})
+
+            elif child.type == 'link_close':
+                current_marks = [m for m in current_marks if m.get('type') != 'link']
+
+            elif child.type == 'image':
+                # Flush any accumulated text
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+
+                # Extract image attributes
+                src = None
+                alt = child.content or ""
+                title = None
+
+                for attr in child.attrs:
+                    if attr[0] == 'src':
+                        src = attr[1]
+                    elif attr[0] == 'title':
+                        title = attr[1]
+
+                if src:
+                    # ADF media node structure
+                    media_node = {
+                        "type": "mediaGroup",
+                        "content": [{
+                            "type": "media",
+                            "attrs": {
+                                "type": "external",
+                                "url": src,
+                                "alt": alt
+                            }
+                        }]
+                    }
+                    # Images need to be at block level, not inline
+                    # For now, add as text placeholder
+                    adf_content.append({
+                        "type": "text",
+                        "text": f"[Image: {alt or src}]"
+                    })
+
+            elif child.type == 'softbreak':
+                current_text += '\n'
+
+            elif child.type == 'hardbreak':
+                if current_text:
+                    adf_content.append({"type": "text", "text": current_text})
+                    current_text = ""
+                adf_content.append({"type": "hardBreak"})
+
+        # Flush any remaining text
+        if current_text:
+            adf_content.append({"type": "text", "text": current_text})
+
+        return adf_content
     
     def create_epic(self, summary: str, description: str = "", **kwargs) -> Dict:
         """Create an Epic"""

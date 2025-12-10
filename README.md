@@ -11,7 +11,7 @@ A comprehensive Python-based JIRA client with CLI interface for all common JIRA 
 - 🔗 Epic and issue linking
 - 💬 Comments and attachments
 - 🔍 JQL search support
-- 📝 Markdown to Atlassian Document Format conversion
+- 📝 **Comprehensive Markdown Support** - Write natural markdown that renders beautifully in JIRA!
 
 ## Installation
 
@@ -35,6 +35,55 @@ JIRA_PROJECT_KEY=YOUR_PROJECT_KEY
 ```
 
 Generate API token at: https://id.atlassian.com/manage-profile/security/api-tokens
+
+## Markdown Support
+
+The tool supports comprehensive markdown formatting for issue descriptions and comments:
+
+### ✅ Fully Supported
+- **Text Formatting:** `**bold**`, `*italic*`, `***bold italic***`, `~~strikethrough~~`, `` `inline code` ``
+- **Lists:** Bullet lists and numbered lists with unlimited nesting depth
+- **Task Lists:** `- [ ]` unchecked and `- [x]` checked (displayed as text)
+- **Code Blocks:** ` ```language ` with syntax highlighting for all major languages
+- **Tables:** Full table support with headers and formatting
+- **Links:** `[text](url)` - renders as clickable links
+- **Headings:** `#` through `######` (H1-H6)
+- **Horizontal Rules:** `---`, `***`, or `___`
+- **Mixed Formatting:** All formats can be combined
+
+### ⚠️ Limitations
+- **Blockquotes:** NOT supported (JIRA API limitation - validation fails)
+- **Images:** Show as `[Image: alt text]` placeholder (file upload not implemented)
+- **Definition Lists:** No ADF equivalent
+- **Inline HTML:** Stripped for security
+- **Interactive Checkboxes:** Task lists display as text, not interactive checkboxes
+
+### Example
+```bash
+jira create "My Story" -d "## Overview
+
+This has **bold** and *italic* text.
+
+### Features
+- Feature 1
+- Feature 2
+  - Nested item
+  - Another nested
+
+### Code Example
+\`\`\`python
+def example():
+    return 'works!'
+\`\`\`
+
+| Priority | Status |
+|----------|--------|
+| High     | TODO   |
+
+See [documentation](https://example.com) for details."
+```
+
+This will render beautifully in JIRA with proper formatting, tables, and code highlighting!
 
 ## Usage
 
